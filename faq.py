@@ -1,31 +1,48 @@
-import openai
+import asyncio
+import requests
+from requests.exceptions import ConnectionError
+from concurrent.futures import ThreadPoolExecutor
 import os
+from pptx_generator import generate_pptx
+# from pdfchat import search_qa_index, index_qa_files
 
-# Set up OpenAI API
-openai.api_key = os.environ["OPENAI_API_KEY"]
 
-async def fetch_gpt_answer(prompt, n=1):
-    response = openai.Completion.create(
-        engine="text-davinci-003",
-        prompt=prompt,
-        max_tokens=500,
-        n=n,
-        stop=None,
-        temperature=0.7,
-    )
-    answers = [choice.text.strip() for choice in response.choices]
-    return answers if n > 1 else answers[0]
+executor = ThreadPoolExecutor()
 
-async def fetch_answer_with_context(question):
-    context = (
-        "Skyhawks Sports Academy Oregon is the franchise company of MM&MK Corp"
-        "Leadership team consists of: Mike Alarcon - Franchise Owner, Josh Kaiel - Franchise Owner, Tom Neri - Area Manager, Evan Ransom - Area Manager"
-        "Company email address is: oregon@skyhawks.com"
-        "Company phone number is: 503-894-6113"
-        "Paydays are every other Friday, and the upcoming paydays are: "
-        "April 14th, 2023; April 28th, 2023, and so on."
-    )
+async def fetch_gpt_answer(full_context, n=1, max_retries=5, backoff_factor=3):
+    api_key = os.environ["OPENAI_API_KEY"]
+    headers = {"Authorization": f"Bearer {api_key}"}
+    data = {
+        "model": "gpt-4",
+        "messages": full_context,
+        "max_tokens": 500,
+        "n": n,
+        "stop": None,
+        "temperature": 0.7,
+    }
+    url = "https://api.openai.com/v1/chat/completions"
 
-    prompt = f"Given the following context: '{context}', answer the question: '{question}'"
-    answer = await fetch_gpt_answer(prompt)
+    for i in range(max_retries):
+        try:
+            response = await asyncio.get_event_loop().run_in_executor(
+                executor,
+                lambda: requests.post(url, headers=headers, json=data)
+            )
+            response.raise_for_status()
+            response_data = response.json()
+            answers = [choice['message']['content'].strip() for choice in response_data['choices']]  # Update this line
+            return answers if n > 1 else answers[0]
+        except ConnectionError as e:
+            if i < max_retries - 1:
+                wait_time = backoff_factor * (2 ** i)
+                print(f"ConnectionError: Retrying in {wait_time} seconds...")
+                await asyncio.sleep(wait_time)
+            else:
+                raise e
+
+async def fetch_gpt_answer_with_context(question, context):
+    messages = [{"role": "system", "content": context},
+                {"role": "user", "content": question}]
+    answer = await fetch_gpt_answer(messages)
     return answer
+
